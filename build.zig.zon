@@ -1,5 +1,6 @@
 .{
-    .name = "ion-extras",
+    .name = .ion_extras,
+    .fingerprint = 0xca07e61cbb209104,
     .version = "0.1.0",
     .paths = .{
         "build.zig",

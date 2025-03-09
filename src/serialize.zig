@@ -249,7 +249,7 @@ fn Serializer(comptime writing: bool) type {
                 .array => |a| try self.serializeSlice(a.child, ptr.*[0..]),
                 .pointer => |p| {
                     switch (p.size) {
-                        .Slice => {
+                        .slice => {
                             if (writing) {
                                 try std.leb.writeUleb128(self.writer, ptr.len);
                                 try self.serializeSlice(p.child, ptr.*);
@@ -260,7 +260,7 @@ fn Serializer(comptime writing: bool) type {
                                 ptr.* = slice;
                             }
                         },
-                        .One => {
+                        .one => {
                             if (writing) {
                                 try self.serialize(p.child, ptr.*);
                             } else {

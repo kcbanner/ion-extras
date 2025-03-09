@@ -139,21 +139,21 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         extra_field.length_field = .{
             .name = "num_" ++ field.name,
             .type = length_type,
-            .default_value = &@as(length_type, 0),
+            .default_value_ptr = &@as(length_type, 0),
             .is_comptime = false,
             .alignment = 0,
         };
 
         const slice_info: std.builtin.Type = .{
             .pointer = .{
-                .size = .Slice,
+                .size = .slice,
                 .is_const = false,
                 .is_volatile = false,
                 .alignment = extra_field.value_alignment,
                 .address_space = .generic,
                 .child = extra_field.value_type,
                 .is_allowzero = false,
-                .sentinel = null,
+                .sentinel_ptr = null,
             },
         };
 
@@ -161,7 +161,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         extra_field.accessor_field = .{
             .name = field.name,
             .type = slice_type,
-            .default_value = null,
+            .default_value_ptr = null,
             .is_comptime = false,
             .alignment = @alignOf(slice_type),
         };
@@ -201,7 +201,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         length_fields[definition_len] = .{
             .name = "total_size",
             .type = usize,
-            .default_value = &@as(usize, 0),
+            .default_value_ptr = &@as(usize, 0),
             .is_comptime = false,
             .alignment = 0,
         };
@@ -215,7 +215,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             length_fields[length_fields.len - 1] = .{
                 .name = "_",
                 .type = Int,
-                .default_value = &@as(Int, 0),
+                .default_value_ptr = &@as(Int, 0),
                 .is_comptime = false,
                 .alignment = 0,
             };
