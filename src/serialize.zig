@@ -134,7 +134,7 @@ pub fn serializeMappableAlloc(
 ) ![]align(@alignOf(T)) u8 {
     const S = MappableSerializer(T);
     const size = S.requiredSize(ptr, endian);
-    const buf = try allocator.alignedAlloc(u8, @alignOf(T), size);
+    const buf = try allocator.alignedAlloc(u8, .of(T), size);
     try S.serialize(ptr, buf, endian);
     return buf;
 }

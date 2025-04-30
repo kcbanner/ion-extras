@@ -286,7 +286,7 @@ fn innerRequiredSize(
 /// If you need to allocate a structure that does use inner Slices, use `allocExternal`.
 pub fn alloc(allocator: std.mem.Allocator, comptime TRoot: type, template: TRoot) ![]align(@alignOf(TRoot)) u8 {
     const size = try requiredSize(TRoot, &template);
-    const buf = try allocator.alignedAlloc(u8, @alignOf(TRoot), size);
+    const buf = try allocator.alignedAlloc(u8, .of(TRoot), size);
 
     const ptr = std.mem.bytesAsValue(TRoot, buf);
     ptr.* = template;
@@ -318,7 +318,7 @@ pub fn allocExternalLengths(
     external_lengths: []const usize,
 ) ![]align(@alignOf(TRoot)) u8 {
     const size = try requiredSizeExternalLengths(TRoot, &template, external_lengths);
-    const buf = try allocator.alignedAlloc(u8, @alignOf(TRoot), size);
+    const buf = try allocator.alignedAlloc(u8, .of(TRoot), size);
 
     const ptr = std.mem.bytesAsValue(TRoot, buf);
     ptr.* = template;

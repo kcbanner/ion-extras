@@ -245,7 +245,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
     });
 
     return struct {
-        pub const alignment = max_alignment;
+        pub const alignment: std.mem.Alignment = .fromByteUnits(max_alignment);
         pub const Lengths = LengthsT;
         pub const Accessor = AccessorT;
 
@@ -353,7 +353,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             return try allocator.allocWithOptions(
                 u8,
                 totalSize(lengths),
-                @alignOf(THeader),
+                .of(THeader),
                 null,
             );
         }
