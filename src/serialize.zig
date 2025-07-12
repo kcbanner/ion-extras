@@ -173,6 +173,7 @@ fn isTriviallySerializable(T: type, endian: std.builtin.Endian) bool {
 
     const info = @typeInfo(T);
     switch (info) {
+        .void => return true,
         .bool => return true,
         .int => |i| {
             const tag_bits = i.bits;
@@ -231,6 +232,7 @@ pub fn Serializer(comptime writing: bool) type {
         pub fn serialize(self: *Self, T: type, ptr: if (writing) *const T else *T) !void {
             const info = @typeInfo(T);
             switch (info) {
+                .void => {},
                 .bool => {
                     if (writing) {
                         try self.writer.writeByte(@intFromBool(ptr.*));
@@ -704,6 +706,7 @@ test "basic types" {
             y: u64,
         } = .{ .x = 256 },
         s: u4,
+        t: void,
     };
 
     const foo_in: Foo = .{
@@ -734,6 +737,7 @@ test "basic types" {
             .y = 128,
         },
         .s = 8,
+        .t = {},
     };
 
     {
@@ -767,7 +771,7 @@ test "basic types" {
         });
         defer testing.allocator.free(serialized);
 
-        try testing.expectEqual(0b1111111111111110011, std.mem.bytesAsValue(u24, serialized[0..3]).*);
+        try testing.expectEqual(0b11111111111111110011, std.mem.bytesAsValue(u24, serialized[0..3]).*);
         try testing.expectEqual(75, serialized.len);
 
         var foo_out: Foo = undefined;
