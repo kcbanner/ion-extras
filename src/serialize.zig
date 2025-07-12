@@ -28,12 +28,22 @@ pub const Config = struct {
     /// Endianness of the serialized data
     endian: std.builtin.Endian = native_endian,
 
+    /// Whether or not to serialize struct fields that compare equal to their defaults.
+    /// This will cause a bitfield to be serialized ahead of the struct data.
+    /// Fields are compared with std.meta.eql.
+    skip_defaults: bool = false,
+
     /// Optional context. This will be available for `serialize` functions to use as `serializer.context`
     context: ?*anyopaque = null,
 };
 
 /// Serializes T into a packed bytes
-pub fn serializePacked(writer: std.io.AnyWriter, comptime T: type, ptr: *const T, config: Config) !void {
+pub fn serializePacked(
+    writer: std.io.AnyWriter,
+    comptime T: type,
+    ptr: *const T,
+    config: Config,
+) !void {
     if (config.data_version > config.serializer_version) return error.UnknownFutureVersion;
 
     var serializer: Serializer(true) = .{
@@ -47,7 +57,12 @@ pub fn serializePacked(writer: std.io.AnyWriter, comptime T: type, ptr: *const T
 }
 
 /// Serializes T into a slice of packed bytes allocated by `allocator`.
-pub fn serializeAlloc(allocator: std.mem.Allocator, comptime T: type, ptr: *const T, config: Config) ![]u8 {
+pub fn serializeAlloc(
+    allocator: std.mem.Allocator,
+    comptime T: type,
+    ptr: *const T,
+    config: Config,
+) ![]u8 {
     if (config.data_version > config.serializer_version) return error.UnknownFutureVersion;
 
     var buf: std.ArrayListUnmanaged(u8) = .{};
@@ -307,8 +322,29 @@ pub fn Serializer(comptime writing: bool) type {
                             }
                         }
                     } else {
-                        inline for (s.fields) |field| {
-                            try serialize(self, field.type, &@field(ptr, field.name));
+                        var serialized_fields: std.bit_set.IntegerBitSet(s.fields.len) = .initFull();
+                        if (self.config.skip_defaults) {
+                            if (writing) {
+                                inline for (s.fields, 0..) |field, ix| {
+                                    if (field.defaultValue()) |default_value| {
+                                        if (std.meta.eql(@field(ptr, field.name), default_value)) {
+                                            serialized_fields.unset(ix);
+                                        }
+                                    }
+                                }
+                            }
+
+                            var mask: @TypeOf(serialized_fields).MaskInt = if (writing) serialized_fields.mask else undefined;
+                            try self.serialize(@TypeOf(mask), &mask);
+                            if (!writing) serialized_fields.mask = mask;
+                        }
+
+                        inline for (s.fields, 0..) |field, ix| {
+                            if (serialized_fields.isSet(ix)) {
+                                try self.serialize(field.type, &@field(ptr, field.name));
+                            } else if (!writing) {
+                                (&@field(ptr, field.name)).* = field.defaultValue().?;
+                            }
                         }
                     }
                 },
@@ -622,6 +658,9 @@ test "basic types" {
         d: struct {
             x: i32,
             y: u32,
+        } = .{
+            .x = 6,
+            .y = 7,
         },
         e: enum {
             foo,
@@ -663,7 +702,7 @@ test "basic types" {
         r: union(enum) {
             x: u32,
             y: u64,
-        },
+        } = .{ .x = 256 },
         s: u4,
     };
 
@@ -703,7 +742,7 @@ test "basic types" {
         const serialized = try serializeAlloc(testing.allocator, Foo, &foo_in, .{});
         defer testing.allocator.free(serialized);
 
-        try testing.expectEqual(serialized.len, 88);
+        try testing.expectEqual(88, serialized.len);
         try testing.expectEqual(foo_in.a, std.mem.bytesAsValue(u32, serialized[0..4]).*);
         try testing.expectEqual(foo_in.b, std.mem.bytesAsValue(i16, serialized[4..6]).*);
         try testing.expectEqual(@as(usize, 1234), std.mem.bytesAsValue(usize, serialized[6..14]).*);
@@ -718,6 +757,23 @@ test "basic types" {
 
         var foo_out: Foo = undefined;
         try deserializeFromSliceAlloc(testing.allocator, Foo, &foo_out, serialized, .{});
+
+        try testing.expectEqualDeep(foo_in, foo_out);
+    }
+
+    {
+        const serialized = try serializeAlloc(testing.allocator, Foo, &foo_in, .{
+            .skip_defaults = true,
+        });
+        defer testing.allocator.free(serialized);
+
+        try testing.expectEqual(0b1111111111111110011, std.mem.bytesAsValue(u24, serialized[0..3]).*);
+        try testing.expectEqual(75, serialized.len);
+
+        var foo_out: Foo = undefined;
+        try deserializeFromSliceAlloc(testing.allocator, Foo, &foo_out, serialized, .{
+            .skip_defaults = true,
+        });
 
         try testing.expectEqualDeep(foo_in, foo_out);
     }
