@@ -27,6 +27,9 @@ pub const Config = struct {
 
     /// Endianness of the serialized data
     endian: std.builtin.Endian = native_endian,
+
+    /// Optional context. This will be available for `serialize` functions to use as `serializer.context`
+    context: ?*anyopaque = null,
 };
 
 /// Serializes T into a packed bytes
@@ -189,7 +192,7 @@ fn isTriviallySerializable(T: type, endian: std.builtin.Endian) bool {
     }
 }
 
-fn Serializer(comptime writing: bool) type {
+pub fn Serializer(comptime writing: bool) type {
     return struct {
         const Self = @This();
         comptime writing: bool = writing,
@@ -198,6 +201,17 @@ fn Serializer(comptime writing: bool) type {
         allocator: if (writing) void else std.mem.Allocator,
         writer: if (writing) std.io.AnyWriter else void,
         reader: if (writing) void else std.io.AnyReader,
+
+        /// User-provided context.
+        /// Custom `serialize` functions can use this to implement more complex behaviour.
+        /// For example, a serialize function could reference a GUID table to do conversions when serializing.
+        context: ?*anyopaque = null,
+
+        pub fn serializeT(self: *Self, ptr: anytype) !void {
+            const info = @typeInfo(@TypeOf(ptr));
+            if (info != .pointer) @compileError("`ptr` must be a pointer");
+            try self.serialize(info.pointer.child, ptr);
+        }
 
         pub fn serialize(self: *Self, T: type, ptr: if (writing) *const T else *T) !void {
             const info = @typeInfo(T);
@@ -316,10 +330,7 @@ fn Serializer(comptime writing: bool) type {
                     }
                 },
                 .@"union" => |u| {
-                    if (u.layout == .@"packed") {
-                        return self.serializeSlice(u8, std.mem.asBytes(ptr));
-                    }
-
+                    if (u.layout != .auto) return self.serializeSlice(u8, std.mem.asBytes(ptr));
                     if (u.tag_type) |tag_type| {
                         if (writing) {
                             const active_tag = std.meta.activeTag(ptr.*);
@@ -339,7 +350,7 @@ fn Serializer(comptime writing: bool) type {
                                 },
                             }
                         }
-                    } else @compileError("untagged unions can't be serialized");
+                    } else @compileError("untagged unions can't be serialized: " ++ @typeName(T));
                 },
                 else => @compileError("unsupported type " ++ @typeName(T)),
             }
