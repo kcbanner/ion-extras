@@ -109,8 +109,7 @@ pub fn requiredSizeExternalLengths(comptime TRoot: type, root: *const TRoot, ext
 
 fn validateRoot(comptime TRoot: type) void {
     const root_info = @typeInfo(TRoot);
-    if (root_info != .@"struct" or root_info.@"struct".layout == .auto)
-        @compileError("requiresSize expects an extern struct");
+    if (root_info != .@"struct") @compileError("requiresSize expects a struct");
 }
 
 fn innerRequiredSize(
@@ -274,7 +273,7 @@ fn innerRequiredSize(
 ///   - `offset` on Pointer must be defined
 ///   - other fields can be undefined
 ///
-/// The caller should initialize the trailing data via `slice()` and `ptr`().
+/// The caller should initialize the trailing data via `slice()` and `ptr()`.
 ///
 /// Storage for Pointer is always allocated, and points to undefined memory
 /// in the buffer, so it's up to the caller to call `set(null)` as needed.
@@ -353,7 +352,7 @@ test {
 
     // Pointer
     {
-        const Foo = extern struct {
+        const Foo = struct {
             a: u32 align(8),
             b: u32,
             c: Pointer(u64),
@@ -380,7 +379,7 @@ test {
 
     // Slice
     {
-        const Foo = extern struct {
+        const Foo = struct {
             a: u32 align(8),
             b: u32,
             c: Slice(u64, u32),
@@ -405,13 +404,13 @@ test {
 
     // Recursive relative data
     {
-        const Bar = extern struct {
+        const Bar = struct {
             x: u32 align(8),
             y: u32,
             z: Pointer(u64),
         };
 
-        const Foo = extern struct {
+        const Foo = struct {
             a: u32 align(8),
             b: u32,
             c: Slice(Bar, u32),
@@ -435,13 +434,13 @@ test {
 
     // Invalid uninitialized nested slice, the length of Foo.d.z is unknown
     {
-        const Bar = extern struct {
+        const Bar = struct {
             x: u32 align(8),
             y: u32,
             z: Slice(u64, u32),
         };
 
-        const Foo = extern struct {
+        const Foo = struct {
             a: u32 align(8),
             b: u32,
             c: Slice(Bar, u32),
@@ -463,13 +462,13 @@ test {
 
     // External length alloc
     {
-        const Bar = extern struct {
+        const Bar = struct {
             x: u32 align(8),
             y: u32,
             z: Slice(u64, u32),
         };
 
-        const Foo = extern struct {
+        const Foo = struct {
             a: u32 align(8),
             b: extern struct {
                 x: Slice(u64, u32) align(8),

@@ -52,8 +52,6 @@
 //! }
 //! ```
 //!
-//! A `total_size` field can be included in the lengths struct by setting `include_total_size` in the config.
-//!
 //! If you are serializing the result to disk, or some other reason where you don't need the trailing
 //! fields to be aligned, set `include_padding` to false.
 //!
@@ -64,9 +62,6 @@
 //!
 
 pub const Config = struct {
-    // Includes a `total_size` field in the generated length struct
-    include_total_size: bool = false,
-
     // Includes padding so that trailing arrays are aligned. Setting this to false only
     // makes sense in advanced used cases (ie. packed serialization), as alignment errors will
     // occur when accessing unaligned data.
@@ -104,6 +99,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         value_alignment: comptime_int,
         length_field: Type.StructField,
         accessor_field: Type.StructField,
+        const_accessor_field: Type.StructField,
     };
 
     comptime var length_bits: u16 = 0;
@@ -157,10 +153,32 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             },
         };
 
+        const const_slice_info: std.builtin.Type = .{
+            .pointer = .{
+                .size = .slice,
+                .is_const = true,
+                .is_volatile = false,
+                .alignment = extra_field.value_alignment,
+                .address_space = .generic,
+                .child = extra_field.value_type,
+                .is_allowzero = false,
+                .sentinel_ptr = null,
+            },
+        };
+
         const slice_type = @Type(slice_info);
         extra_field.accessor_field = .{
             .name = field.name,
             .type = slice_type,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(slice_type),
+        };
+
+        const const_slice_type = @Type(const_slice_info);
+        extra_field.const_accessor_field = .{
+            .name = field.name,
+            .type = const_slice_type,
             .default_value_ptr = null,
             .is_comptime = false,
             .alignment = @alignOf(slice_type),
@@ -186,25 +204,16 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
     comptime var max_alignment = 0;
     comptime var value_types: [definition_len]type = undefined;
     comptime var value_alignments: [definition_len]comptime_int = undefined;
-    comptime var length_fields: [definition_len + 1 + (if (config.include_total_size) 1 else 0)]Type.StructField = undefined;
+    comptime var length_fields: [definition_len + 1]Type.StructField = undefined;
     comptime var accessor_fields: [definition_len]Type.StructField = undefined;
+    comptime var const_accessor_fields: [definition_len]Type.StructField = undefined;
     for (extra_fields, 0..) |extra_field, ix| {
         value_types[ix] = extra_field.value_type;
         value_alignments[ix] = extra_field.value_alignment;
         length_fields[ix] = extra_field.length_field;
         accessor_fields[ix] = extra_field.accessor_field;
+        const_accessor_fields[ix] = extra_field.const_accessor_field;
         max_alignment = @max(max_alignment, extra_field.value_alignment);
-    }
-
-    if (config.include_total_size) {
-        length_bits += @sizeOf(usize);
-        length_fields[definition_len] = .{
-            .name = "total_size",
-            .type = usize,
-            .default_value_ptr = &@as(usize, 0),
-            .is_comptime = false,
-            .alignment = 0,
-        };
     }
 
     const needs_padding_field = if (config.abi_sized_length) blk: {
@@ -244,13 +253,25 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         },
     });
 
+    const ConstAccessorT = @Type(.{
+        .@"struct" = .{
+            .layout = std.builtin.Type.ContainerLayout.auto,
+            .fields = &const_accessor_fields,
+            .decls = &.{},
+            .is_tuple = false,
+        },
+    });
+
     return struct {
         pub const alignment: std.mem.Alignment = .fromByteUnits(max_alignment);
         pub const Lengths = LengthsT;
         pub const Accessor = AccessorT;
+        pub const ConstAccessor = ConstAccessorT;
 
-        const BufSlice = []align(@alignOf(THeader)) u8;
-        const BufPtr = [*]align(@alignOf(THeader)) u8;
+        pub const BufSlice = []align(@alignOf(THeader)) u8;
+        pub const ConstBufSlice = []align(@alignOf(THeader)) u8;
+        pub const BufPtr = [*]align(@alignOf(THeader)) u8;
+        pub const ConstBufPtr = [*]align(@alignOf(THeader)) const u8;
 
         fn getLengthsPtr(header: *THeader) *Lengths {
             const header_type = @typeInfo(THeader);
@@ -293,10 +314,6 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             const lengths_ptr = getLengthsPtr(header);
 
             lengths_ptr.* = lengths;
-            if (config.include_total_size) {
-                lengths_ptr.total_size = buf.len;
-            }
-
             return header;
         }
 
@@ -331,7 +348,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
                 header.* = existing.*;
                 lengths_ptr.* = lengths;
 
-                const existing_accessor = accessor(@constCast(existing));
+                const existing_accessor = constAccessor(existing);
                 const dupe_accessor = accessor(header);
                 inline for (@typeInfo(Accessor).@"struct".fields) |field_info| {
                     const existing_slice = @field(existing_accessor, field_info.name);
@@ -339,10 +356,6 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
                     const len = @min(existing_slice.len, dupe_slice.len);
                     @memcpy(dupe_slice[0..len], existing_slice[0..len]);
                 }
-            }
-
-            if (config.include_total_size) {
-                lengths_ptr.total_size = buf.len;
             }
 
             return header;
@@ -383,19 +396,36 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             return total;
         }
 
+        fn validateAccessor() void {
+            if (THeader == void) @compileError("When using a void header, accessorFromDataPtr must be used instead of accessor");
+        }
+
         /// Returns an accessor struct containing a slice field for each backing array
         pub fn accessor(header: *THeader) Accessor {
-            if (THeader == void) @compileError("When using a void header, accessorFromDataPtr must be used instead of accessor");
-
+            validateAccessor();
             const iter_ptr: BufPtr = @as(BufPtr, @ptrCast(@alignCast(header))) + @as(usize, @intCast(@sizeOf(THeader)));
             return accessorFromDataPtr(getLengthsPtr(header), iter_ptr);
         }
 
-        pub fn accessorFromDataPtr(lengths: *const Lengths, data_ptr: BufPtr) Accessor {
+        pub fn constAccessor(header: *const THeader) ConstAccessor {
+            validateAccessor();
+            const iter_ptr: ConstBufPtr = @as(ConstBufPtr, @ptrCast(@alignCast(header))) + @as(usize, @intCast(@sizeOf(THeader)));
+            return accessorFromDataPtr(getLengthsPtr(@constCast(header)), iter_ptr);
+        }
+
+        fn AccessorType(comptime DataPtr: type) type {
+            return switch (DataPtr) {
+                BufPtr => Accessor,
+                ConstBufPtr => ConstAccessor,
+                else => @compileError("data_ptr must be either BufPtr or ConstBufPtr"),
+            };
+        }
+
+        pub fn accessorFromDataPtr(lengths: *const Lengths, data_ptr: anytype) AccessorType(@TypeOf(data_ptr)) {
             @setRuntimeSafety(builtin.mode == .Debug);
 
-            var result: Accessor = undefined;
-            var iter_ptr: [*]u8 = data_ptr;
+            var result: AccessorType(@TypeOf(data_ptr)) = undefined;
+            var iter_ptr: [*]u8 = @constCast(data_ptr);
             inline for (value_types, value_alignments, accessor_fields, 0..) |value_type, value_alignment, accessor_field, ix| {
                 const byte_len = @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields[ix].name)));
 
@@ -419,7 +449,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
                 @compileError("data has to be aligned in order to compatible with mappable serialization");
 
             var required_size: usize = 0;
-            const a = accessor(@constCast(header));
+            const a = constAccessor(header);
             inline for (extra_fields, accessor_fields) |extra_field, accessor_field| {
                 if (extra_field.value_alignment != @alignOf(extra_field.value_type))
                     @compileError("custom trailing data alignments are not supported with mappable serialization");
@@ -445,7 +475,6 @@ test ExtraData {
             .words = .{ u32, u4 },
             .doublewords = .{ u64, u8 },
         }, .{
-            .include_total_size = false,
             .include_padding = true,
         });
     };
@@ -459,7 +488,6 @@ test ExtraData {
             .words = .{ u32, u4 },
             .doublewords = .{ u64, u8 },
         }, .{
-            .include_total_size = false,
             .include_padding = false,
         });
     };
@@ -476,7 +504,6 @@ test ExtraData {
                 .alignment = 16,
             },
         }, .{
-            .include_total_size = false,
             .include_padding = true,
             .sort_by_alignment = false,
         });
@@ -569,24 +596,16 @@ test ExtraData {
         try testing.expectEqual(@as(u64, @intCast(ix)), v);
     }
 
-    // Total size field
     const Bar = struct {
         unaligned_data: bool = false,
-        extra: Extra.Lengths = .{},
+        extra: Extra.Lengths align(8) = .{},
 
         const Extra = ExtraData(@This(), .{
             .shorts = .{ u16, u3 },
             .words = .{ u32, u4 },
             .doublewords = .{ u64, u8 },
-        }, .{
-            .include_total_size = true,
-            .include_padding = true,
-        });
+        }, .{});
     };
-
-    const bar_default: Bar = .{};
-    try testing.expectEqual(usize, @TypeOf(bar_default.extra.total_size));
-    try testing.expectEqual(@as(usize, 0), bar_default.extra.total_size);
 
     const bar = try Bar.Extra.create(testing.allocator, .{
         .num_shorts = 5,
@@ -594,8 +613,6 @@ test ExtraData {
         .num_doublewords = 2,
     });
     defer Bar.Extra.deinit(testing.allocator, bar);
-
-    try testing.expectEqual(@as(usize, @sizeOf(Bar) + 54), bar.extra.total_size);
 }
 
 test "ExtraData with no header" {
@@ -618,24 +635,24 @@ test "ExtraData with no header" {
     defer testing.allocator.free(extra);
 
     const accessor = Extra.accessorFromDataPtr(&lengths, extra.ptr);
-
     for (accessor.shorts, 0..) |*v, ix| {
-        v.* = @as(u16, @intCast(ix));
+        v.* = @intCast(ix);
     }
     for (accessor.words, 0..) |*v, ix| {
-        v.* = @as(u32, @intCast(ix));
+        v.* = @intCast(ix);
     }
     for (accessor.doublewords, 0..) |*v, ix| {
-        v.* = @as(u64, @intCast(ix));
+        v.* = @intCast(ix);
     }
 
-    for (accessor.shorts, 0..) |v, ix| {
+    const const_accessor = Extra.accessorFromDataPtr(&lengths, @as(Extra.ConstBufPtr, extra.ptr));
+    for (const_accessor.shorts, 0..) |v, ix| {
         try testing.expectEqual(@as(u16, @intCast(ix)), v);
     }
-    for (accessor.words, 0..) |v, ix| {
+    for (const_accessor.words, 0..) |v, ix| {
         try testing.expectEqual(@as(u32, @intCast(ix)), v);
     }
-    for (accessor.doublewords, 0..) |v, ix| {
+    for (const_accessor.doublewords, 0..) |v, ix| {
         try testing.expectEqual(@as(u64, @intCast(ix)), v);
     }
 }
