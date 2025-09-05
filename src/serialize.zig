@@ -39,7 +39,7 @@ pub const Config = struct {
 
 /// Serializes T into a packed bytes
 pub fn serializePacked(
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     comptime T: type,
     ptr: *const T,
     config: Config,
@@ -65,7 +65,7 @@ pub fn serializeAlloc(
 ) ![]u8 {
     if (config.data_version > config.serializer_version) return error.UnknownFutureVersion;
 
-    var buf: std.io.Writer.Allocating = .init(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
     var serializer: Serializer(true) = .{
         .allocator = {},
         .config = config,
@@ -89,7 +89,7 @@ pub fn deserializeFromSliceAlloc(
 ) !void {
     if (config.data_version > config.serializer_version) return error.UnknownFutureVersion;
 
-    var reader: std.io.Reader = .fixed(s);
+    var reader: std.Io.Reader = .fixed(s);
     var serializer: Serializer(false) = .{
         .allocator = allocator,
         .config = config,
@@ -215,8 +215,8 @@ pub fn Serializer(comptime writing: bool) type {
 
         config: Config,
         allocator: if (writing) void else std.mem.Allocator,
-        writer: if (writing) *std.io.Writer else void,
-        reader: if (writing) void else *std.io.Reader,
+        writer: if (writing) *std.Io.Writer else void,
+        reader: if (writing) void else *std.Io.Reader,
 
         /// User-provided context.
         /// Custom `serialize` functions can use this to implement more complex behaviour.
@@ -282,10 +282,10 @@ pub fn Serializer(comptime writing: bool) type {
                     switch (p.size) {
                         .slice => {
                             if (writing) {
-                                try writeUleb128(self.writer, ptr.len);
+                                try self.writer.writeUleb128(ptr.len);
                                 try self.serializeSlice(p.child, ptr.*);
                             } else {
-                                const len = try readUleb128(usize, self.reader);
+                                const len = try self.reader.takeLeb128(usize);
                                 const slice = try self.allocator.alloc(p.child, len);
                                 try self.serializeSlice(p.child, slice);
                                 ptr.* = slice;
@@ -310,9 +310,9 @@ pub fn Serializer(comptime writing: bool) type {
 
                     if (s.backing_integer) |Int| {
                         if (writing) {
-                            try writeUleb128(self.writer, @as(Int, @bitCast(ptr.*)));
+                            try self.writer.writeUleb128(@as(Int, @bitCast(ptr.*)));
                         } else {
-                            ptr.* = @bitCast(try readUleb128(Int, self.reader));
+                            ptr.* = @bitCast(try self.reader.takeLeb128(Int));
                         }
                     } else {
                         var serialized_fields: std.bit_set.IntegerBitSet(s.fields.len) = .initFull();
@@ -1162,60 +1162,5 @@ test "versioning" {
             .serializer_version = @intFromEnum(Version.removed_b),
         });
         try testing.expectEqualDeep(foo_v3_expected, foo_v3_out);
-    }
-}
-
-// TODO: Remove these duplicates once std.leb is updated for the new Reader / Writer interfaces
-
-/// Read a single unsigned LEB128 value from the given reader as type T,
-/// or error.Overflow if the value cannot fit.
-pub fn readUleb128(comptime T: type, reader: *std.io.Reader) !T {
-    const U = if (@typeInfo(T).int.bits < 8) u8 else T;
-    const ShiftT = std.math.Log2Int(U);
-
-    const max_group = (@typeInfo(U).int.bits + 6) / 7;
-
-    var value: U = 0;
-    var group: ShiftT = 0;
-
-    while (group < max_group) : (group += 1) {
-        const byte = try reader.takeByte();
-
-        const ov = @shlWithOverflow(@as(U, byte & 0x7f), group * 7);
-        if (ov[1] != 0) return error.Overflow;
-
-        value |= ov[0];
-        if (byte & 0x80 == 0) break;
-    } else {
-        return error.Overflow;
-    }
-
-    // only applies in the case that we extended to u8
-    if (U != T) {
-        if (value > std.math.maxInt(T)) return error.Overflow;
-    }
-
-    return @as(T, @truncate(value));
-}
-
-/// Write a single unsigned integer as unsigned LEB128 to the given writer.
-pub fn writeUleb128(writer: *std.io.Writer, arg: anytype) !void {
-    const Arg = @TypeOf(arg);
-    const Int = switch (Arg) {
-        comptime_int => std.math.IntFittingRange(arg, arg),
-        else => Arg,
-    };
-    const Value = if (@typeInfo(Int).int.bits < 8) u8 else Int;
-    var value: Value = arg;
-
-    while (true) {
-        const byte: u8 = @truncate(value & 0x7f);
-        value >>= 7;
-        if (value == 0) {
-            try writer.writeByte(byte);
-            break;
-        } else {
-            try writer.writeByte(byte | 0x80);
-        }
     }
 }
