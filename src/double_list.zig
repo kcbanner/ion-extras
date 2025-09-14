@@ -1,3 +1,9 @@
+//! This is a fixed-size list that grows from either end via `add(.front)` or `add(.back)`
+//!
+//! Useful for applications where you have a set number of elements and need to build
+//! two subsets. For example, building two lists of physics bodies that you need to add
+//! or remove from the scene in a batch - added bodies are added to the front, and removed
+//! bodies are added to the end.
 pub fn DoubleList(comptime T: type) type {
     return struct {
         elements: []T,
