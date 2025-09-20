@@ -775,7 +775,7 @@ test "basic types" {
 
     const Bar = struct {
         a: packed union {
-            x: u32,
+            x: u64,
             y: u64,
             z: packed struct(u64) {
                 a: u32,
