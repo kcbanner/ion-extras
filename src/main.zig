@@ -5,6 +5,7 @@ pub const FreeList = @import("free_list.zig").FreeList;
 pub const MultiBitSet = @import("multi_bit_set.zig").MultiBitSet;
 pub const relative = @import("relative.zig");
 pub const serialize = @import("serialize.zig");
+pub const TaggedAllocator = @import("tagged_allocator.zig").TaggedAllocator;
 
 const std = @import("std");
 test {

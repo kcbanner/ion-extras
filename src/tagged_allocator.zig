@@ -5,7 +5,7 @@ pub const Config = struct {
     num_threads: u16,
     /// Size of the blocks reserved by per-thread allocators
     block_size: comptime_int = 2 * 1024 * 1024,
-    /// Whether or not to track memory fragmentation
+    /// Whether or not to track unreachable memory
     track_fragmentation: bool = builtin.mode == .Debug,
 };
 
@@ -41,11 +41,11 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
     return struct {
         heap: []u8,
 
-        // The lanes are indexed as follows:
+        // The lanes in the set are indexed as follows:
         //  - [0 - Indexer.count): Lane index is @intFromEnum(TagE). Set bits indicate that block belongs to that tag
         //  - [Indexer.count]: Set bits indicate that block is allocated to some tag
         index: IndexMultiBitSet,
-        // Index of the next free block. This is the minimum free index in `index[Indexer.count]`.
+        // Index of the first free block. This is the minimum free index in `index[Indexer.count]`.
         next_free: ?usize,
         // Guards the non-PerThread state (the above fields and metadata inside free blocks)
         lock: std.Thread.Mutex = .{},
@@ -136,6 +136,9 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
 
             free_block.next_free = null;
             self.index.unsetAll(@intFromEnum(tag));
+
+            for (&self.threads) |*per_thread|
+                per_thread.current_block.remove(tag);
         }
 
         fn asBlock(heap: []u8, index: usize, num_blocks: usize) Block {
@@ -256,6 +259,7 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
                 const new_block = self.acquire(tag, num_blocks) orelse return null;
                 const block = thread.current_block.putUninitialized(tag);
                 block.* = new_block;
+
                 return std.heap.FixedBufferAllocator.alloc(&block.allocator, len, alignment, ret_addr);
             }
 

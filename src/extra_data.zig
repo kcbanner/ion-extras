@@ -235,10 +235,17 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         break :blk false;
     } else false;
 
+    const extra_fields_final = extra_fields;
+    const value_types_final = value_types;
+    const value_alignments_final = value_alignments;
+    const length_fields_final = length_fields;
+    const accessor_fields_final = accessor_fields;
+    const const_accessor_fields_final = const_accessor_fields;
+
     const LengthsT = @Type(.{
         .@"struct" = .{
             .layout = std.builtin.Type.ContainerLayout.@"packed",
-            .fields = length_fields[0 .. length_fields.len - if (needs_padding_field) 0 else 1],
+            .fields = length_fields_final[0 .. length_fields_final.len - if (needs_padding_field) 0 else 1],
             .decls = &.{},
             .is_tuple = false,
         },
@@ -247,7 +254,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
     const AccessorT = @Type(.{
         .@"struct" = .{
             .layout = std.builtin.Type.ContainerLayout.auto,
-            .fields = &accessor_fields,
+            .fields = &accessor_fields_final,
             .decls = &.{},
             .is_tuple = false,
         },
@@ -256,7 +263,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
     const ConstAccessorT = @Type(.{
         .@"struct" = .{
             .layout = std.builtin.Type.ContainerLayout.auto,
-            .fields = &const_accessor_fields,
+            .fields = &const_accessor_fields_final,
             .decls = &.{},
             .is_tuple = false,
         },
@@ -333,7 +340,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             const use_trivial_copy = if (!config.sort_by_alignment) blk: {
                 inline for (@typeInfo(Lengths).@"struct".fields, 0..) |field_info, ix| {
                     if (@field(existing_lengths, field_info.name) != @field(lengths, field_info.name)) {
-                        break :blk ix == length_fields.len - 1;
+                        break :blk ix == length_fields_final.len - 1;
                     }
                 }
 
@@ -386,12 +393,12 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         /// Returns the size in bytes of header + variable length data, including padding for alignment
         pub fn totalSize(lengths: Lengths) usize {
             var total: usize = @sizeOf(THeader);
-            inline for (value_types, value_alignments, 0..) |value_type, value_alignment, ix| {
+            inline for (value_types_final, value_alignments_final, 0..) |value_type, value_alignment, ix| {
                 if (config.include_padding) {
                     total = std.mem.alignForward(usize, total, value_alignment);
                 }
 
-                total += @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields[ix].name)));
+                total += @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields_final[ix].name)));
             }
             return total;
         }
@@ -426,8 +433,13 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
             var result: AccessorType(@TypeOf(data_ptr)) = undefined;
             var iter_ptr: [*]u8 = @constCast(data_ptr);
-            inline for (value_types, value_alignments, accessor_fields, 0..) |value_type, value_alignment, accessor_field, ix| {
-                const byte_len = @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields[ix].name)));
+            inline for (
+                value_types_final,
+                value_alignments_final,
+                accessor_fields_final,
+                0..,
+            ) |value_type, value_alignment, accessor_field, ix| {
+                const byte_len = @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields_final[ix].name)));
 
                 if (config.include_padding) {
                     iter_ptr = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(iter_ptr), value_alignment));
@@ -450,7 +462,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
             var required_size: usize = 0;
             const a = constAccessor(header);
-            inline for (extra_fields, accessor_fields) |extra_field, accessor_field| {
+            inline for (extra_fields_final, accessor_fields_final) |extra_field, accessor_field| {
                 if (extra_field.value_alignment != @alignOf(extra_field.value_type))
                     @compileError("custom trailing data alignments are not supported with mappable serialization");
 
