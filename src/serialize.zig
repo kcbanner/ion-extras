@@ -13,9 +13,9 @@
 //! Variable length data is serialized in-line. This form requires a deserialization
 //! step to access the data, as it can't be directly mapped.
 //!
-//! Non-mappable serialization supports versioning. The serializer can skip over
-//! removed fields if they are present in an old data stream, or provide defaults
-//! for added fields if they are missing from the data stream.
+//! Non-mappable serialization supports struct versioning, via user-implementable `serialize` functions.
+//! Serialization functions can skip over removed fields if they are present in an old data stream,
+//! or provide defaults for added fields if they are missing from the data stream.
 
 pub const Config = struct {
     /// Version of the serializer / deserializer
@@ -37,7 +37,7 @@ pub const Config = struct {
     context: ?*anyopaque = null,
 };
 
-/// Serializes T into a packed bytes
+/// Serializes T into packed bytes
 pub fn serializePacked(
     writer: *std.Io.Writer,
     comptime T: type,
@@ -366,7 +366,7 @@ pub fn Serializer(comptime writing: bool) type {
                             try self.serialize(tag_type, &active_tag);
                             switch (active_tag) {
                                 inline else => |tag| {
-                                    try self.serialize(std.meta.TagPayload(T, tag), &@field(ptr, @tagName(tag)));
+                                    try self.serialize(@FieldType(T, @tagName(tag)), &@field(ptr, @tagName(tag)));
                                 },
                             }
                         } else {
@@ -375,7 +375,7 @@ pub fn Serializer(comptime writing: bool) type {
                             switch (active_tag) {
                                 inline else => |tag| {
                                     ptr.* = @unionInit(T, @tagName(tag), undefined);
-                                    try self.serialize(std.meta.TagPayload(T, tag), &@field(ptr, @tagName(tag)));
+                                    try self.serialize(@FieldType(T, @tagName(tag)), &@field(ptr, @tagName(tag)));
                                 },
                             }
                         }

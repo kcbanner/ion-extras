@@ -40,6 +40,7 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
 
     return struct {
         heap: []u8,
+        io: std.Io,
 
         // The lanes in the set are indexed as follows:
         //  - [0 - Indexer.count): Lane index is @intFromEnum(TagE). Set bits indicate that block belongs to that tag
@@ -48,18 +49,18 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
         // Index of the first free block. This is the minimum free index in `index[Indexer.count]`.
         next_free: ?usize,
         // Guards the non-PerThread state (the above fields and metadata inside free blocks)
-        lock: std.Thread.Mutex = .{},
+        lock: std.Io.Mutex = .init,
         // When a per-thread block is replaced because it can't fit the required allocation size,
         // the number of bytes that were unallocated in that block are added here
         fragmented_bytes: if (config.track_fragmentation) std.EnumArray(TagE, usize) else void,
-        // Per-thread state. Does not need to be locked when accessed.
+        // Per-thread state. Only accessed by the owning thread, so does not need to be locked.
         threads: [config.num_threads]PerThread,
 
         const Self = @This();
 
         /// Initialize the allocator with a maximum capacity of `max_capacity`,
         /// which will be rounded up to the nearest block size.
-        pub fn init(backing_allocator: std.mem.Allocator, max_capacity: usize) !Self {
+        pub fn init(backing_allocator: std.mem.Allocator, io: std.Io, max_capacity: usize) !Self {
             const block_capacity = std.mem.alignForward(usize, max_capacity, config.block_size);
             const num_blocks = @divExact(block_capacity, config.block_size);
             const self_size = @sizeOf(IndexMultiBitSet.MaskInt) * IndexMultiBitSet.totalMasks(num_blocks);
@@ -78,6 +79,7 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
 
             var self = Self{
                 .heap = heap,
+                .io = io,
                 .index = try .init(self_allocator, num_blocks),
                 .next_free = 0,
                 .threads = undefined,
@@ -107,8 +109,8 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
         }
 
         pub fn freeTag(self: *Self, tag: TagE) void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             self.index.toggleLane(Indexer.count, @intFromEnum(tag));
 
@@ -154,8 +156,8 @@ pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
         fn acquire(self: *Self, tag: TagE, num_blocks: usize) ?Block {
             assert(num_blocks > 0);
 
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             var next_free = self.next_free orelse return null;
             var free_block = asFreeBlock(self.heap, next_free);

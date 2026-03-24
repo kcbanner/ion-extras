@@ -95,25 +95,25 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
     const definition_len = definition_type.@"struct".fields.len;
     const ExtraDataField = struct {
+        name: []const u8,
+        length_name: []const u8,
         value_type: type,
         value_alignment: comptime_int,
-        length_field: Type.StructField,
-        accessor_field: Type.StructField,
-        const_accessor_field: Type.StructField,
+        length_type: type,
     };
 
     comptime var length_bits: u16 = 0;
     comptime var extra_fields: [definition_len]ExtraDataField = undefined;
     inline for (definition_type.@"struct".fields, &extra_fields) |field, *extra_field| {
-        comptime var length_type: type = undefined;
+        const length_name = "num_" ++ field.name;
         if (field.type == FieldDefinition) {
-            extra_field.value_type = @field(definition, field.name).type;
-            if (@field(definition, field.name).alignment) |a| {
-                extra_field.value_alignment = a;
-            } else {
-                extra_field.value_alignment = @alignOf(extra_field.value_type);
-            }
-            length_type = @field(definition, field.name).length_type;
+            extra_field.* = .{
+                .name = field.name,
+                .length_name = length_name,
+                .value_type = @field(definition, field.name).type,
+                .value_alignment = if (@field(definition, field.name).alignment) |a| a else @alignOf(extra_field.value_type),
+                .length_type = @field(definition, field.name).length_type,
+            };
         } else {
             const field_type = @typeInfo(field.type);
             if (field_type != .@"struct" or
@@ -126,63 +126,16 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
                 @compileError("each field in the definition struct must be a tuple of {type, type} or FieldDefinition");
             }
 
-            extra_field.value_type = @field(definition, field.name)[0];
-            extra_field.value_alignment = @alignOf(extra_field.value_type);
-            length_type = @field(definition, field.name)[1];
+            extra_field.* = .{
+                .name = field.name,
+                .length_name = length_name,
+                .value_type = @field(definition, field.name)[0],
+                .value_alignment = @alignOf(extra_field.value_type),
+                .length_type = @field(definition, field.name)[1],
+            };
         }
 
-        length_bits += @typeInfo(length_type).int.bits;
-        extra_field.length_field = .{
-            .name = "num_" ++ field.name,
-            .type = length_type,
-            .default_value_ptr = &@as(length_type, 0),
-            .is_comptime = false,
-            .alignment = 0,
-        };
-
-        const slice_info: std.builtin.Type = .{
-            .pointer = .{
-                .size = .slice,
-                .is_const = false,
-                .is_volatile = false,
-                .alignment = extra_field.value_alignment,
-                .address_space = .generic,
-                .child = extra_field.value_type,
-                .is_allowzero = false,
-                .sentinel_ptr = null,
-            },
-        };
-
-        const const_slice_info: std.builtin.Type = .{
-            .pointer = .{
-                .size = .slice,
-                .is_const = true,
-                .is_volatile = false,
-                .alignment = extra_field.value_alignment,
-                .address_space = .generic,
-                .child = extra_field.value_type,
-                .is_allowzero = false,
-                .sentinel_ptr = null,
-            },
-        };
-
-        const slice_type = @Type(slice_info);
-        extra_field.accessor_field = .{
-            .name = field.name,
-            .type = slice_type,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(slice_type),
-        };
-
-        const const_slice_type = @Type(const_slice_info);
-        extra_field.const_accessor_field = .{
-            .name = field.name,
-            .type = const_slice_type,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(slice_type),
-        };
+        length_bits += @typeInfo(extra_field.length_type).int.bits;
     }
 
     if (config.sort_by_alignment) {
@@ -198,22 +151,54 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             }
         };
 
-        std.sort.insertionContext(0, extra_fields.len, Context{ .extra_fields = &extra_fields });
+        std.sort.heapContext(0, extra_fields.len, Context{ .extra_fields = &extra_fields });
     }
 
-    comptime var max_alignment = 0;
-    comptime var value_types: [definition_len]type = undefined;
-    comptime var value_alignments: [definition_len]comptime_int = undefined;
-    comptime var length_fields: [definition_len + 1]Type.StructField = undefined;
-    comptime var accessor_fields: [definition_len]Type.StructField = undefined;
-    comptime var const_accessor_fields: [definition_len]Type.StructField = undefined;
-    for (extra_fields, 0..) |extra_field, ix| {
-        value_types[ix] = extra_field.value_type;
-        value_alignments[ix] = extra_field.value_alignment;
-        length_fields[ix] = extra_field.length_field;
-        accessor_fields[ix] = extra_field.accessor_field;
-        const_accessor_fields[ix] = extra_field.const_accessor_field;
-        max_alignment = @max(max_alignment, extra_field.value_alignment);
+    comptime var length_names: [definition_len + 1][]const u8 = undefined;
+    comptime var length_types: [definition_len + 1]type = undefined;
+    comptime var length_attrs: [definition_len + 1]std.builtin.Type.StructField.Attributes = undefined;
+    comptime var accessor_names: [definition_len][]const u8 = undefined;
+    comptime var accessor_types: [definition_len]type = undefined;
+    comptime var const_accessor_types: [definition_len]type = undefined;
+
+    for (
+        &extra_fields,
+        length_names[0..definition_len],
+        length_types[0..definition_len],
+        length_attrs[0..definition_len],
+        accessor_names[0..definition_len],
+        accessor_types[0..definition_len],
+        const_accessor_types[0..definition_len],
+    ) |
+        extra_field,
+        *length_name,
+        *length_type,
+        *length_attr,
+        *accessor_name,
+        *accessor_type,
+        *const_accessor_type,
+    | {
+        length_name.* = extra_field.length_name;
+        length_type.* = extra_field.length_type;
+        length_attr.* = .{
+            .default_value_ptr = &@as(extra_field.length_type, 0),
+        };
+
+        accessor_name.* = extra_field.name;
+        accessor_type.* = @Pointer(.slice, .{
+            .@"const" = false,
+            .@"volatile" = false,
+            .@"allowzero" = false,
+            .@"addrspace" = .generic,
+            .@"align" = extra_field.value_alignment,
+        }, extra_field.value_type, null);
+        const_accessor_type.* = @Pointer(.slice, .{
+            .@"const" = true,
+            .@"volatile" = false,
+            .@"allowzero" = false,
+            .@"addrspace" = .generic,
+            .@"align" = extra_field.value_alignment,
+        }, extra_field.value_type, null);
     }
 
     const needs_padding_field = if (config.abi_sized_length) blk: {
@@ -221,12 +206,10 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         const padding_bits = abi_bits - length_bits;
         if (padding_bits > 0) {
             const Int = std.meta.Int(.unsigned, padding_bits);
-            length_fields[length_fields.len - 1] = .{
-                .name = "_",
-                .type = Int,
+            length_names[definition_len] = "_";
+            length_types[definition_len] = Int;
+            length_attrs[definition_len] = .{
                 .default_value_ptr = &@as(Int, 0),
-                .is_comptime = false,
-                .alignment = 0,
             };
 
             break :blk true;
@@ -235,39 +218,37 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         break :blk false;
     } else false;
 
+    comptime var max_alignment = 0;
+    for (extra_fields) |extra_field| {
+        max_alignment = @max(max_alignment, extra_field.value_alignment);
+    }
+
     const extra_fields_final = extra_fields;
-    const value_types_final = value_types;
-    const value_alignments_final = value_alignments;
-    const length_fields_final = length_fields;
-    const accessor_fields_final = accessor_fields;
-    const const_accessor_fields_final = const_accessor_fields;
 
-    const LengthsT = @Type(.{
-        .@"struct" = .{
-            .layout = std.builtin.Type.ContainerLayout.@"packed",
-            .fields = length_fields_final[0 .. length_fields_final.len - if (needs_padding_field) 0 else 1],
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const num_length_fields = definition_len + @intFromBool(needs_padding_field);
+    const LengthsT = @Struct(
+        std.builtin.Type.ContainerLayout.@"packed",
+        null,
+        length_names[0..num_length_fields],
+        length_types[0..num_length_fields],
+        length_attrs[0..num_length_fields],
+    );
 
-    const AccessorT = @Type(.{
-        .@"struct" = .{
-            .layout = std.builtin.Type.ContainerLayout.auto,
-            .fields = &accessor_fields_final,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const AccessorT = @Struct(
+        std.builtin.Type.ContainerLayout.auto,
+        null,
+        &accessor_names,
+        &accessor_types,
+        &@splat(.{}),
+    );
 
-    const ConstAccessorT = @Type(.{
-        .@"struct" = .{
-            .layout = std.builtin.Type.ContainerLayout.auto,
-            .fields = &const_accessor_fields_final,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const ConstAccessorT = @Struct(
+        std.builtin.Type.ContainerLayout.auto,
+        null,
+        &accessor_names,
+        &const_accessor_types,
+        &@splat(.{}),
+    );
 
     return struct {
         pub const alignment: std.mem.Alignment = .fromByteUnits(max_alignment);
@@ -335,12 +316,11 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             const lengths_ptr = getLengthsPtr(header);
 
             // See if we use a simply memcpy or if we need to copy each extra data slice separately
-            // If only the last field (after alignment sorting) was modified we can use a simple memcpy;
-
+            // If only the last field (after alignment sorting) was modified we can use a simple memcpy
             const use_trivial_copy = if (!config.sort_by_alignment) blk: {
                 inline for (@typeInfo(Lengths).@"struct".fields, 0..) |field_info, ix| {
                     if (@field(existing_lengths, field_info.name) != @field(lengths, field_info.name)) {
-                        break :blk ix == length_fields_final.len - 1;
+                        break :blk ix == definition_len;
                     }
                 }
 
@@ -393,12 +373,12 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         /// Returns the size in bytes of header + variable length data, including padding for alignment
         pub fn totalSize(lengths: Lengths) usize {
             var total: usize = @sizeOf(THeader);
-            inline for (value_types_final, value_alignments_final, 0..) |value_type, value_alignment, ix| {
+            inline for (&extra_fields_final) |extra_field| {
                 if (config.include_padding) {
-                    total = std.mem.alignForward(usize, total, value_alignment);
+                    total = std.mem.alignForward(usize, total, extra_field.value_alignment);
                 }
 
-                total += @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields_final[ix].name)));
+                total += @sizeOf(extra_field.value_type) * @as(usize, @intCast(@field(lengths, extra_field.length_name)));
             }
             return total;
         }
@@ -433,21 +413,15 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
             var result: AccessorType(@TypeOf(data_ptr)) = undefined;
             var iter_ptr: [*]u8 = @constCast(data_ptr);
-            inline for (
-                value_types_final,
-                value_alignments_final,
-                accessor_fields_final,
-                0..,
-            ) |value_type, value_alignment, accessor_field, ix| {
-                const byte_len = @sizeOf(value_type) * @as(usize, @intCast(@field(lengths, length_fields_final[ix].name)));
-
+            inline for (extra_fields_final) |extra_field| {
+                const byte_len = @sizeOf(extra_field.value_type) * @as(usize, @intCast(@field(lengths, extra_field.length_name)));
                 if (config.include_padding) {
-                    iter_ptr = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(iter_ptr), value_alignment));
+                    iter_ptr = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(iter_ptr), extra_field.value_alignment));
                 } else {
                     iter_ptr = @ptrFromInt(@intFromPtr(iter_ptr));
                 }
 
-                @field(result, accessor_field.name) = @alignCast(std.mem.bytesAsSlice(value_type, iter_ptr[0..byte_len]));
+                @field(result, extra_field.name) = @alignCast(std.mem.bytesAsSlice(extra_field.value_type, iter_ptr[0..byte_len]));
                 iter_ptr += byte_len;
             }
 
@@ -462,11 +436,11 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
             var required_size: usize = 0;
             const a = constAccessor(header);
-            inline for (extra_fields_final, accessor_fields_final) |extra_field, accessor_field| {
+            inline for (extra_fields_final) |extra_field| {
                 if (extra_field.value_alignment != @alignOf(extra_field.value_type))
                     @compileError("custom trailing data alignments are not supported with mappable serialization");
 
-                const result = try serializer.serializeTrailing(extra_field.value_type, @field(a, accessor_field.name)[0..]);
+                const result = try serializer.serializeTrailing(extra_field.value_type, @field(a, extra_field.name)[0..]);
                 required_size += result.required_size;
             }
 
