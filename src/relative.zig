@@ -19,15 +19,15 @@ pub fn Slice(comptime T: type, comptime TLength: type) type {
         /// When iterating this slice, it's important to capture the values as pointers if they
         /// contain other relative data structures. If they are captured by value, the offsets
         /// will point into stack memory, not to the trailing data.
-        pub fn slice(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.is_const) []const T else []T {
+        pub fn slice(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.attrs.@"const") []const T else []T {
             if (self.offset == 0) return &.{};
             return @as(
-                if (@typeInfo(@TypeOf(self)).pointer.is_const) [*]const T else [*]T,
+                if (@typeInfo(@TypeOf(self)).pointer.attrs.@"const") [*]const T else [*]T,
                 @ptrFromInt(@intFromPtr(self) + self.offset),
             )[0..self.len];
         }
 
-        pub fn sliceZ(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.is_const) [:0]const T else [:0]T {
+        pub fn sliceZ(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.attrs.@"const") [:0]const T else [:0]T {
             const s = self.slice();
             return s[0 .. s.len - 1 :0];
         }
@@ -61,7 +61,7 @@ pub fn Pointer(comptime T: type) type {
             }
         }
 
-        pub fn ptr(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.is_const) ?*const T else ?*T {
+        pub fn ptr(self: anytype) if (@typeInfo(@TypeOf(self)).pointer.attrs.@"const") ?*const T else ?*T {
             if (self.offset == 0) return null;
             return @ptrFromInt(@intFromPtr(self) + self.offset);
         }
@@ -126,17 +126,17 @@ fn innerRequiredSize(
     const info = @typeInfo(T);
     switch (info) {
         .@"struct" => |s| {
-            inline for (s.fields) |field| {
-                if (@typeInfo(field.type) != .@"struct") continue;
+            inline for (s.field_names, s.field_types) |field_name, field_type| {
+                if (@typeInfo(field_type) != .@"struct") continue;
 
-                const field_offset = if (set_offsets) offset + @offsetOf(T, field.name) else {};
-                if (!@hasDecl(field.type, "_T")) {
+                const field_offset = if (set_offsets) offset + @offsetOf(T, field_name) else {};
+                if (!@hasDecl(field_type, "_T")) {
                     if (ptr) |p| {
                         try innerRequiredSize(
                             TRoot,
                             set_offsets,
-                            field.type,
-                            &@field(p, field.name),
+                            field_type,
+                            &@field(p, field_name),
                             pos,
                             field_offset,
                             external_lengths,
@@ -147,16 +147,16 @@ fn innerRequiredSize(
                     continue;
                 }
 
-                const _T = @field(field.type, "_T");
+                const _T = @field(field_type, "_T");
 
                 if (@alignOf(_T) > @alignOf(T))
                     @compileError("the alignment of " ++ @typeName(T) ++
                         " must be >= the alignment of all its relative field data types (" ++
                         std.fmt.comptimePrint("{}", .{@alignOf(_T)}) ++ ")");
 
-                if (@hasDecl(field.type, "_TLength")) {
-                    const _TLength = @field(field.type, "_TLength");
-                    if (field.type == Slice(_T, _TLength)) {
+                if (@hasDecl(field_type, "_TLength")) {
+                    const _TLength = @field(field_type, "_TLength");
+                    if (field_type == Slice(_T, _TLength)) {
                         // This means there is a relative data structure that contains a Slice, and its
                         // length field isn't available. This can happen when using `alloc`, since the
                         // `template` argument can only specify lengths on the root struct.
@@ -173,13 +173,13 @@ fn innerRequiredSize(
                             external_lengths.?.* = external_lengths.?.*[1..];
                             break :blk .{ 0, len };
                         } else blk: {
-                            const slice = &@field(ptr.?, field.name);
+                            const slice = &@field(ptr.?, field_name);
                             break :blk .{ slice.offset, slice.len };
                         };
 
                         const size = slice_len * @sizeOf(_T);
                         if (set_offsets) {
-                            const slice = &@field(ptr.?, field.name);
+                            const slice = &@field(ptr.?, field_name);
                             slice.offset = @intCast(pos.* - field_offset);
                             slice_offset = slice.offset;
                             // TODO: Should this be setting the offset if slice_len is 0?
@@ -202,7 +202,7 @@ fn innerRequiredSize(
                                 );
                             }
                         } else {
-                            const slice = &@field(ptr.?, field.name);
+                            const slice = &@field(ptr.?, field_name);
                             for (slice.slice(), 0..) |*data, ix| {
                                 try innerRequiredSize(
                                     TRoot,
@@ -217,13 +217,13 @@ fn innerRequiredSize(
                             }
                         }
                     }
-                } else if (field.type == Pointer(_T)) {
+                } else if (field_type == Pointer(_T)) {
                     pos.* = std.mem.alignForward(usize, pos.*, @alignOf(_T));
                     const start_pos = pos.*;
 
-                    var ptr_offset = if (consume_external_length) 0 else @field(ptr.?, field.name).offset;
+                    var ptr_offset = if (consume_external_length) 0 else @field(ptr.?, field_name).offset;
                     if (set_offsets) {
-                        const p = &@field(ptr.?, field.name);
+                        const p = &@field(ptr.?, field_name);
                         p.offset = @intCast(start_pos - field_offset);
                         ptr_offset = p.offset;
                     }
@@ -243,7 +243,7 @@ fn innerRequiredSize(
                             true,
                         );
                     } else {
-                        const p = &@field(ptr.?, field.name);
+                        const p = &@field(ptr.?, field_name);
                         if (p.ptr()) |data| {
                             try innerRequiredSize(
                                 TRoot,

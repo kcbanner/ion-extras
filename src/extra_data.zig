@@ -80,7 +80,7 @@ pub const Config = struct {
 pub const FieldDefinition = struct {
     type: type,
     length_type: type,
-    alignment: ?comptime_int = null,
+    @"align": ?comptime_int = null,
 };
 
 const std = @import("std");
@@ -93,45 +93,53 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
         @compileError("definition must be a struct");
     }
 
-    const definition_len = definition_type.@"struct".fields.len;
+    const definition_len = definition_type.@"struct".field_types.len;
     const ExtraDataField = struct {
         name: []const u8,
         length_name: []const u8,
         value_type: type,
-        value_alignment: comptime_int,
+        value_alignment: ?comptime_int,
         length_type: type,
+
+        pub fn alignment(edf: @This()) comptime_int {
+            return edf.value_alignment orelse @alignOf(edf.value_type);
+        }
     };
 
     comptime var length_bits: u16 = 0;
     comptime var extra_fields: [definition_len]ExtraDataField = undefined;
-    inline for (definition_type.@"struct".fields, &extra_fields) |field, *extra_field| {
-        const length_name = "num_" ++ field.name;
-        if (field.type == FieldDefinition) {
+    inline for (
+        definition_type.@"struct".field_names,
+        definition_type.@"struct".field_types,
+        &extra_fields,
+    ) |field_name, field_type, *extra_field| {
+        const length_name = "num_" ++ field_name;
+        if (field_type == FieldDefinition) {
             extra_field.* = .{
-                .name = field.name,
+                .name = field_name,
                 .length_name = length_name,
-                .value_type = @field(definition, field.name).type,
-                .value_alignment = if (@field(definition, field.name).alignment) |a| a else @alignOf(extra_field.value_type),
-                .length_type = @field(definition, field.name).length_type,
+                .value_type = @field(definition, field_name).type,
+                .value_alignment = if (@field(definition, field_name).@"align") |a| a else null,
+                .length_type = @field(definition, field_name).length_type,
             };
         } else {
-            const field_type = @typeInfo(field.type);
-            if (field_type != .@"struct" or
-                !field_type.@"struct".is_tuple or
-                field_type.@"struct".fields.len != 2 or
-                @typeInfo(field_type.@"struct".fields[0].type) != .type or
-                @typeInfo(field_type.@"struct".fields[1].type) != .type or
-                @typeInfo(@field(definition, field.name)[1]) != .int)
+            const field_type_info = @typeInfo(field_type);
+            if (field_type_info != .@"struct" or
+                !field_type_info.@"struct".is_tuple or
+                field_type_info.@"struct".field_types.len != 2 or
+                @typeInfo(field_type_info.@"struct".field_types[0]) != .type or
+                @typeInfo(field_type_info.@"struct".field_types[1]) != .type or
+                @typeInfo(@field(definition, field_name)[1]) != .int)
             {
                 @compileError("each field in the definition struct must be a tuple of {type, type} or FieldDefinition");
             }
 
             extra_field.* = .{
-                .name = field.name,
+                .name = field_name,
                 .length_name = length_name,
-                .value_type = @field(definition, field.name)[0],
-                .value_alignment = @alignOf(extra_field.value_type),
-                .length_type = @field(definition, field.name)[1],
+                .value_type = @field(definition, field_name)[0],
+                .value_alignment = null,
+                .length_type = @field(definition, field_name)[1],
             };
         }
 
@@ -143,7 +151,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             extra_fields: []ExtraDataField,
 
             pub fn lessThan(comptime ctx: @This(), comptime a: usize, comptime b: usize) bool {
-                return ctx.extra_fields[a].value_alignment > ctx.extra_fields[b].value_alignment;
+                return ctx.extra_fields[a].alignment() > ctx.extra_fields[b].alignment();
             }
 
             pub fn swap(comptime ctx: @This(), comptime a: usize, comptime b: usize) void {
@@ -156,7 +164,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
     comptime var length_names: [definition_len + 1][]const u8 = undefined;
     comptime var length_types: [definition_len + 1]type = undefined;
-    comptime var length_attrs: [definition_len + 1]std.builtin.Type.StructField.Attributes = undefined;
+    comptime var length_attrs: [definition_len + 1]std.lang.Type.Struct.FieldAttributes = undefined;
     comptime var accessor_names: [definition_len][]const u8 = undefined;
     comptime var accessor_types: [definition_len]type = undefined;
     comptime var const_accessor_types: [definition_len]type = undefined;
@@ -190,37 +198,36 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             .@"volatile" = false,
             .@"allowzero" = false,
             .@"addrspace" = .generic,
-            .@"align" = extra_field.value_alignment,
+            .@"align" = extra_field.value_alignment orelse null,
         }, extra_field.value_type, null);
         const_accessor_type.* = @Pointer(.slice, .{
             .@"const" = true,
             .@"volatile" = false,
             .@"allowzero" = false,
             .@"addrspace" = .generic,
-            .@"align" = extra_field.value_alignment,
+            .@"align" = extra_field.value_alignment orelse null,
         }, extra_field.value_type, null);
     }
 
-    const needs_padding_field = if (config.abi_sized_length) blk: {
+    const needs_padding_field, const length_bits_final = if (config.abi_sized_length) blk: {
         const abi_bits = try std.math.ceilPowerOfTwo(u16, length_bits);
         const padding_bits = abi_bits - length_bits;
-        if (padding_bits > 0) {
-            const Int = std.meta.Int(.unsigned, padding_bits);
+        const add_padding = padding_bits > 0;
+        if (add_padding) {
+            const Int = @Int(.unsigned, padding_bits);
             length_names[definition_len] = "_";
             length_types[definition_len] = Int;
             length_attrs[definition_len] = .{
                 .default_value_ptr = &@as(Int, 0),
             };
-
-            break :blk true;
         }
 
-        break :blk false;
-    } else false;
+        break :blk .{ add_padding, @max(abi_bits, length_bits) };
+    } else .{ false, length_bits };
 
     comptime var max_alignment = 0;
     for (extra_fields) |extra_field| {
-        max_alignment = @max(max_alignment, extra_field.value_alignment);
+        max_alignment = @max(max_alignment, extra_field.value_alignment orelse @alignOf(extra_field.value_type));
     }
 
     const extra_fields_final = extra_fields;
@@ -228,7 +235,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
     const num_length_fields = definition_len + @intFromBool(needs_padding_field);
     const LengthsT = @Struct(
         std.builtin.Type.ContainerLayout.@"packed",
-        null,
+        @Int(.unsigned, length_bits_final),
         length_names[0..num_length_fields],
         length_types[0..num_length_fields],
         length_attrs[0..num_length_fields],
@@ -270,13 +277,16 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             }
 
             // Find the length struct field on THeader
-            const header_length_field = inline for (header_type.@"struct".fields) |field| {
-                if (field.type == Lengths) break field;
+            const header_length_field_name = inline for (
+                header_type.@"struct".field_names,
+                header_type.@"struct".field_types,
+            ) |field_name, field_type| {
+                if (field_type == Lengths) break field_name;
             } else {
                 @compileError("THeader must have a field of type " ++ @typeName(Lengths));
             };
 
-            return &@field(header, header_length_field.name);
+            return &@field(header, header_length_field_name);
         }
 
         fn getLengths(header: *const THeader) Lengths {
@@ -318,8 +328,8 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             // See if we use a simply memcpy or if we need to copy each extra data slice separately
             // If only the last field (after alignment sorting) was modified we can use a simple memcpy
             const use_trivial_copy = if (!config.sort_by_alignment) blk: {
-                inline for (@typeInfo(Lengths).@"struct".fields, 0..) |field_info, ix| {
-                    if (@field(existing_lengths, field_info.name) != @field(lengths, field_info.name)) {
+                inline for (@typeInfo(Lengths).@"struct".field_names, 0..) |field_name, ix| {
+                    if (@field(existing_lengths, field_name) != @field(lengths, field_name)) {
                         break :blk ix == definition_len;
                     }
                 }
@@ -337,9 +347,9 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
 
                 const existing_accessor = constAccessor(existing);
                 const dupe_accessor = accessor(header);
-                inline for (@typeInfo(Accessor).@"struct".fields) |field_info| {
-                    const existing_slice = @field(existing_accessor, field_info.name);
-                    const dupe_slice = @field(dupe_accessor, field_info.name);
+                inline for (@typeInfo(Accessor).@"struct".field_names) |field_name| {
+                    const existing_slice = @field(existing_accessor, field_name);
+                    const dupe_slice = @field(dupe_accessor, field_name);
                     const len = @min(existing_slice.len, dupe_slice.len);
                     @memcpy(dupe_slice[0..len], existing_slice[0..len]);
                 }
@@ -375,7 +385,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             var total: usize = @sizeOf(THeader);
             inline for (&extra_fields_final) |extra_field| {
                 if (config.include_padding) {
-                    total = std.mem.alignForward(usize, total, extra_field.value_alignment);
+                    total = std.mem.alignForward(usize, total, extra_field.alignment());
                 }
 
                 total += @sizeOf(extra_field.value_type) * @as(usize, @intCast(@field(lengths, extra_field.length_name)));
@@ -416,7 +426,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             inline for (extra_fields_final) |extra_field| {
                 const byte_len = @sizeOf(extra_field.value_type) * @as(usize, @intCast(@field(lengths, extra_field.length_name)));
                 if (config.include_padding) {
-                    iter_ptr = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(iter_ptr), extra_field.value_alignment));
+                    iter_ptr = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(iter_ptr), extra_field.alignment()));
                 } else {
                     iter_ptr = @ptrFromInt(@intFromPtr(iter_ptr));
                 }
@@ -437,7 +447,7 @@ pub fn ExtraData(comptime THeader: type, comptime definition: anytype, comptime 
             var required_size: usize = 0;
             const a = constAccessor(header);
             inline for (extra_fields_final) |extra_field| {
-                if (extra_field.value_alignment != @alignOf(extra_field.value_type))
+                if (extra_field.alignment() != @alignOf(extra_field.value_type))
                     @compileError("custom trailing data alignments are not supported with mappable serialization");
 
                 const result = try serializer.serializeTrailing(extra_field.value_type, @field(a, extra_field.name)[0..]);
@@ -487,7 +497,7 @@ test ExtraData {
             .aligned_bytes = FieldDefinition{
                 .type = u8,
                 .length_type = u16,
-                .alignment = 16,
+                .@"align" = 16,
             },
         }, .{
             .include_padding = true,
@@ -551,7 +561,7 @@ test ExtraData {
     const allocation = Foo.Extra.allocation(foo);
     try testing.expectEqual(@as([*]u8, @ptrCast(foo)), allocation.ptr);
     try testing.expectEqual(Foo.Extra.totalSize(foo.extra), allocation.len);
-    try testing.expectEqual(@alignOf(Foo), @typeInfo(@TypeOf(allocation.ptr)).pointer.alignment);
+    try testing.expectEqual(@alignOf(Foo), @typeInfo(@TypeOf(allocation.ptr)).pointer.attrs.@"align");
 
     const accessor = Foo.Extra.accessor(foo);
     try testing.expectEqual([]u16, @TypeOf(accessor.shorts));

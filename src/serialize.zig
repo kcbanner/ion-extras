@@ -192,8 +192,8 @@ fn isTriviallySerializable(T: type, endian: std.builtin.Endian) bool {
             if (s.backing_integer) |_| {
                 return false;
             } else {
-                inline for (s.fields) |field| {
-                    if (!isTriviallySerializable(field.type, endian)) return false;
+                inline for (s.field_types) |field_type| {
+                    if (!isTriviallySerializable(field_type, endian)) return false;
                 }
             }
 
@@ -250,7 +250,7 @@ pub fn Serializer(comptime writing: bool) type {
                         }
                     } else {
                         const bits = i.bits + 8 - remainder;
-                        const Int = std.meta.Int(i.signedness, bits);
+                        const Int = @Int(i.signedness, bits);
                         if (writing) {
                             try self.writer.writeInt(Int, ptr.*, self.config.endian);
                         } else {
@@ -260,7 +260,7 @@ pub fn Serializer(comptime writing: bool) type {
                     }
                 },
                 .float => |f| {
-                    const Int = std.meta.Int(.unsigned, f.bits);
+                    const Int = @Int(.unsigned, f.bits);
                     if (writing) {
                         try self.writer.writeInt(Int, @as(Int, @bitCast(ptr.*)), self.config.endian);
                     } else {
@@ -315,12 +315,17 @@ pub fn Serializer(comptime writing: bool) type {
                             ptr.* = @bitCast(try self.reader.takeLeb128(Int));
                         }
                     } else {
-                        var serialized_fields: std.bit_set.IntegerBitSet(s.fields.len) = .initFull();
+                        var serialized_fields: std.bit_set.Integer(s.field_types.len) = .full;
                         if (self.config.skip_defaults) {
                             if (writing) {
-                                inline for (s.fields, 0..) |field, ix| {
-                                    if (field.defaultValue()) |default_value| {
-                                        if (std.meta.eql(@field(ptr, field.name), default_value)) {
+                                inline for (
+                                    s.field_names,
+                                    s.field_types,
+                                    s.field_attrs,
+                                    0..,
+                                ) |field_name, field_type, field_attrs, ix| {
+                                    if (field_attrs.defaultValue(field_type)) |default_value| {
+                                        if (std.meta.eql(@field(ptr, field_name), default_value)) {
                                             serialized_fields.unset(ix);
                                         }
                                     }
@@ -332,11 +337,16 @@ pub fn Serializer(comptime writing: bool) type {
                             if (!writing) serialized_fields.mask = mask;
                         }
 
-                        inline for (s.fields, 0..) |field, ix| {
+                        inline for (
+                            s.field_names,
+                            s.field_types,
+                            s.field_attrs,
+                            0..,
+                        ) |field_name, field_type, field_attrs, ix| {
                             if (serialized_fields.isSet(ix)) {
-                                try self.serialize(field.type, &@field(ptr, field.name));
+                                try self.serialize(field_type, &@field(ptr, field_name));
                             } else if (!writing) {
-                                (&@field(ptr, field.name)).* = field.defaultValue().?;
+                                (&@field(ptr, field_name)).* = field_attrs.defaultValue(field_type).?;
                             }
                         }
                     }
@@ -468,8 +478,8 @@ fn isVariableLength(comptime T: type) bool {
         .pointer => unreachable,
         .@"struct" => |s| {
             if (std.meta.hasFn(T, "serializeMappable")) return true;
-            inline for (s.fields) |field| {
-                if (isVariableLength(field.type)) return true;
+            inline for (s.field_types) |field_type| {
+                if (isVariableLength(field_type)) return true;
             }
             return false;
         },
@@ -587,12 +597,12 @@ fn MappableSerializer(comptime TRoot: type) type {
 
                     var size: usize = 0;
                     if (s.layout != .@"packed") {
-                        inline for (s.fields) |field| {
+                        inline for (s.field_names, s.field_types) |field_name, field_type| {
                             size += try innerSerialize(
                                 self,
-                                field.type,
-                                &@field(in, field.name),
-                                if (out) |o| &@field(o, field.name) else null,
+                                field_type,
+                                &@field(in, field_name),
+                                if (out) |o| &@field(o, field_name) else null,
                             );
                         }
                     }
@@ -619,7 +629,7 @@ pub inline fn byteSwapScalar(comptime T: type, value: T) T {
     const info = @typeInfo(T);
     return switch (info) {
         .float => |f| @bitCast(@byteSwap(@as(
-            std.meta.Int(.unsigned, f.bits),
+            @Int(.unsigned, f.bits),
             @bitCast(value),
         ))),
         else => @byteSwap(value),

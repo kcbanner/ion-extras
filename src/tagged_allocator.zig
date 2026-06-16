@@ -18,11 +18,11 @@ const FreeBlock = struct {
 
 pub fn TaggedAllocator(comptime TagE: type, comptime config: Config) type {
     const tag_info = @typeInfo(TagE).@"enum";
-    if (!tag_info.is_exhaustive)
+    if (tag_info.mode == .nonexhaustive)
         @compileError("`TagE` must be an exhaustive enum");
 
     const tag_bits = 7;
-    const TagInt = std.meta.Int(.unsigned, tag_bits);
+    const TagInt = @Int(.unsigned, tag_bits);
 
     if (@typeInfo(tag_info.tag_type).int.bits > tag_bits)
         @compileError("`TagE` must be be backed by a u7 or smaller");
@@ -311,7 +311,7 @@ test TaggedAllocator {
         .num_threads = num_threads,
         .block_size = block_size,
         .track_fragmentation = true,
-    }) = try .init(testing.allocator, block_size * num_blocks);
+    }) = try .init(testing.allocator, testing.io, block_size * num_blocks);
     defer heap.deinit(testing.allocator);
 
     // Free tags with 0 allocs
